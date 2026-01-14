@@ -3,184 +3,102 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Xiaozhi Web Client (Fixed)</title>
-    <script src="https://cdn.jsdelivr.net/npm/opus-decoder@0.7.11/dist/opus-decoder.umd.min.js" charset="UTF-8"></script>
+    <title>SePay Transaction Monitor</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f0f2f5; }
-        #log { height: 400px; overflow-y: auto; background: #000; color: #0f0; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 14px; }
-        #input-area { margin-top: 20px; display: flex; gap: 10px; }
-        input { flex: 1; padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; }
-        button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        h1 { text-align: center; color: #333; }
+        body { font-family: sans-serif; margin: 20px; line-height: 1.6; }
+        #log { background: #f4f4f4; padding: 10px; border-radius: 5px; max-height: 400px; overflow-y: auto; }
+        .transaction { border-bottom: 1px solid #ddd; padding: 5px 0; }
+        .new { color: green; font-weight: bold; }
+        .status { margin-bottom: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>🗣️ Xiaozhi Web Client (Đã sửa session_id)</h1>
-    <div id="log"></div>
-    <div id="input-area">
-        <input type="text" id="messageInput" placeholder="Gõ tin nhắn rồi nhấn Enter hoặc Gửi..." autofocus>
-        <button onclick="sendMessage()">Gửi</button>
+
+    <h2>Giám sát giao dịch SePay</h2>
+    <div class="status" id="status">Khởi tạo...</div>
+    <div id="log">
+        <div>Đang chờ giao dịch mới...</div>
     </div>
 
     <script>
-        const logElement = document.getElementById('log');
-        const inputElement = document.getElementById('messageInput');
+        const API_TOKEN = 'OW63XF1P6PCLHRTLGPDU9MVHXGLFYVI3APY8ANTR751T4CNDZKZVRSHXQAKOU2D9';
+        const BASE_URL = 'https://my.sepay.vn/userapi/transactions/list';
+        let sinceId = 0;
+        let isFirstLoad = true;
 
-        let ws = null;
-        let sessionId = null;
-        let audioContext = null;
-        let audioQueue = [];
-        let isPlaying = false;
-        let opusDecoder = null;
-
-        const SERVER_URL = "wss://api.tenclass.net/xiaozhi/v1/";
-
-        function log(message) {
-            const time = new Date().toLocaleTimeString();
-            logElement.innerHTML += `<div>[${time}] ${message}</div>`;
-            logElement.scrollTop = logElement.scrollHeight;
-        }
-
-        async function initAudio() {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-                await audioContext.resume();
-                log("✅ Web Audio Context: 48000Hz");
-            }
-
-            if (!opusDecoder) {
-                const { OpusDecoder } = window["opus-decoder"];
-                opusDecoder = new OpusDecoder({ channels: 1, sampleRate: 48000 });
-                await opusDecoder.ready;
-                await opusDecoder.reset();
-                log("✅ Opus Decoder sẵn sàng (48000Hz)");
-            }
-        }
-
-        async function decodeOpusPacket(uint8Array) {
+        async function fetchTransactions() {
             try {
-                const { channelData } = await opusDecoder.decodeFrame(uint8Array);
-                const pcmFloat32 = channelData[0];
-
-                for (let i = 0; i < pcmFloat32.length; i++) {
-                    pcmFloat32[i] *= 3.0; // Tăng volume mạnh hơn chút
-                }
-
-                audioQueue.push(pcmFloat32);
-                if (!isPlaying) playNextChunk();
-            } catch (e) {
-                log("❌ Lỗi decode: " + e.message);
-            }
-        }
-
-        async function playNextChunk() {
-            if (audioQueue.length === 0) {
-                isPlaying = false;
-                return;
-            }
-            isPlaying = true;
-            const pcmFloat32 = audioQueue.shift();
-            const audioBuffer = audioContext.createBuffer(1, pcmFloat32.length, 48000);
-            audioBuffer.getChannelData(0).set(pcmFloat32);
-
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContext.destination);
-            source.onended = playNextChunk;
-            source.start();
-        }
-
-        function connect() {
-            ws = new WebSocket(SERVER_URL);
-
-            ws.onopen = () => {
-                log("✅ Kết nối WebSocket thành công!");
-                ws.send(JSON.stringify({
-                    type: "hello",
-                    version: 3,
-                    features: { mcp: true },
-                    transport: "websocket",
-                    audio_params: {
-                        format: "opus",
-                        sample_rate: 48000,
-                        channels: 1,
-                        frame_duration: 60
+                const url = `${BASE_URL}?since_id=${sinceId}`;
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${API_TOKEN}`,
+                        'Content-Type': 'application/json'
                     }
-                }));
-                log("📤 Đã gửi message hello (yêu cầu 48000Hz)");
-            };
+                });
 
-            ws.onmessage = async (event) => {
-                if (typeof event.data === 'string') {
-                    log(`[Server text] ${event.data}`);
+                const data = await response.json();
 
-                    // Tìm session_id trong bất kỳ message nào
-                    const match = event.data.match(/"session_id"\s*:\s*"([^"]+)"/);
-                    if (match && !sessionId) {
-                        sessionId = match[1];
-                        log(`✅ Đã nhận session_id: ${sessionId}`);
-                        log("🚀 Bây giờ bạn có thể gửi tin nhắn!");
+                if (data.status === 200 && data.transactions.length > 0) {
+                    // Sắp xếp ID từ thấp đến cao để xử lý theo thứ tự thời gian
+                    const transactions = data.transactions.sort((a, b) => parseInt(a.id) - parseInt(b.id));
 
-                        // Tự động gửi tin nhắn test để kích hoạt (thường server gửi session_id kèm TTS)
-                        setTimeout(() => {
-                            if (inputElement.value === '') {
-                                inputElement.value = "xin chào";
-                                sendMessage();
-                            }
-                        }, 1000);
+                    transactions.forEach(trans => {
+                        // Nếu không phải lần load đầu tiên, hiển thị thông báo
+                        if (!isFirstLoad) {
+                            showNotification(trans);
+                            appendLog(trans);
+                        }
+                        
+                        // Cập nhật sinceId là ID lớn nhất
+                        if (parseInt(trans.id) > sinceId) {
+                            sinceId = parseInt(trans.id);
+                        }
+                    });
+
+                    if (isFirstLoad) {
+                        document.getElementById('status').innerText = `Đã tải lịch sử. Last ID: ${sinceId}`;
+                        isFirstLoad = false;
                     }
-
-                    if (event.data.includes("\"type\":\"tts_start\"")) log("🔊 Bắt đầu phát giọng nói...");
-                    if (event.data.includes("\"type\":\"tts_end\"")) log("🏁 Kết thúc giọng nói.");
-                } else {
-                    const arrayBuffer = await event.data.arrayBuffer();
-                    const uint8 = new Uint8Array(arrayBuffer);
-                    decodeOpusPacket(uint8);
                 }
-            };
-
-            ws.onclose = () => log("❌ Kết nối đóng - thử reload trang để kết nối lại.");
-            ws.onerror = () => log("❌ Lỗi WebSocket (kiểm tra mạng hoặc server).");
-        }
-
-        function sendMessage() {
-            const text = inputElement.value.trim();
-            if (!text) return;
-            if (!sessionId) {
-                log("⚠ Vui lòng đợi nhận session_id từ server trước khi gửi!");
-                return;
+            } catch (error) {
+                console.error('Lỗi khi gọi API:', error);
+                document.getElementById('status').innerText = 'Lỗi kết nối API!';
             }
-
-            const msg = {
-                session_id: sessionId,
-                type: "listen",
-                state: "detect",
-                text: text
-            };
-
-            ws.send(JSON.stringify(msg));
-            log(`📤 Bạn: ${text}`);
-            inputElement.value = '';
         }
 
-        inputElement.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
+        function appendLog(trans) {
+            const logDiv = document.getElementById('log');
+            const item = document.createElement('div');
+            item.className = 'transaction new';
+            item.innerHTML = `[${trans.transaction_date}] +${trans.amount_in}đ - Nội dung: ${trans.transaction_content}`;
+            logDiv.prepend(item);
+        }
 
-        window.onload = async () => {
-            await initAudio();
-            connect();
+        function showNotification(trans) {
+            // Hiển thị thông báo trình duyệt nếu được phép
+            if (Notification.permission === "granted") {
+                new Notification("Giao dịch mới!", {
+                    body: `Số tiền: ${trans.amount_in}đ\nNội dung: ${trans.transaction_content}`,
+                    icon: "https://sepay.vn/favicon.ico"
+                });
+            } else {
+                // Nếu chưa xin quyền thì báo qua console hoặc alert
+                console.log(`Giao dịch mới: ${trans.amount_in} - ${trans.transaction_content}`);
+            }
+        }
 
-            // Test beep
-            const oscillator = audioContext.createOscillator();
-            oscillator.frequency.value = 440;
-            oscillator.connect(audioContext.destination);
-            oscillator.start();
-            oscillator.stop(audioContext.currentTime + 0.2);
-            log("🔊 Beep test – nếu nghe thấy thì loa OK!");
-            log("⏳ Đang chờ server phản hồi hello và session_id...");
-        };
+        // Xin quyền thông báo
+        if (Notification.permission !== "denied") {
+            Notification.requestPermission();
+        }
+
+        // Chạy lần đầu ngay lập tức
+        fetchTransactions();
+
+        // Thiết lập vòng lặp 1 giây (1000ms)
+        setInterval(fetchTransactions, 1000);
+
     </script>
 </body>
 </html>
