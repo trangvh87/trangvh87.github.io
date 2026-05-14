@@ -1,129 +1,53 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32 WebUSB Test</title>
+    <title>ESP32 Android Fix</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: sans-serif; padding: 20px; line-height: 1.5; background: #f4f4f9; }
-        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; }
-        button:disabled { background: #ccc; }
-        #log { background: #222; color: #0f0; padding: 15px; border-radius: 5px; height: 300px; overflow-y: auto; margin-top: 20px; font-family: monospace; white-space: pre-wrap; font-size: 13px; }
-        .status { margin-bottom: 15px; font-weight: bold; }
-        .status span { color: #d9534f; }
-        .status span.online { color: #5cb85c; }
+        body { font-family: sans-serif; text-align: center; padding: 20px; }
+        #terminal { background: #000; color: #0f0; height: 300px; overflow-y: scroll; 
+                    text-align: left; padding: 10px; font-family: monospace; margin-top: 10px; }
+        button { padding: 15px; font-size: 16px; background: #28a745; color: white; border: none; border-radius: 5px; }
     </style>
 </head>
 <body>
-
-<div class="container">
-    <h2>ESP32 WebUSB Terminal</h2>
-    <p>Dành cho chip: <b>ESP32-C3/S3 (VID: 0x303A)</b></p>
-    
-    <div class="status">Trạng thái: <span id="statusText">Chưa kết nối</span></div>
-    <button id="connectBtn">Kết nối ESP32</button>
-    
-    <div id="log">--- Chờ nhận dữ liệu ---</div>
-    <button id="clearBtn" style="margin-top: 10px; background: #6c757d;">Xóa Log</button>
-</div>
+    <h3>ESP32 USB Direct Access</h3>
+    <p>Nếu không thấy cổng COM, hãy nhấn nút dưới đây</p>
+    <button id="btnConnect">Kết nối trực tiếp USB</button>
+    <div id="terminal"></div>
 
 <script>
-    const connectBtn = document.getElementById('connectBtn');
-    const logElement = document.getElementById('log');
-    const statusText = document.getElementById('statusText');
-    const clearBtn = document.getElementById('clearBtn');
+const ESP32_VID = 0x303A; //
+const ESP32_PID = 0x1001; //
 
-    let device;
+document.getElementById('btnConnect').onclick = async () => {
+    try {
+        const log = (msg) => document.getElementById('terminal').innerHTML += msg + "<br>";
+        
+        // Dùng WebUSB thay vì Web Serial
+        const device = await navigator.usb.requestDevice({
+            filters: [{ vendorId: ESP32_VID, productId: ESP32_PID }]
+        });
 
-    // Thông số từ ảnh 26268.jpg
-    const ESP32_VID = 0x303A;
-    const ESP32_PID = 0x1001;
+        await device.open();
+        await device.selectConfiguration(1);
+        
+        // Trên ESP32-C3/S3, Interface 0 thường là Serial
+        // Nếu không được, hãy thử thay số 0 thành 2
+        await device.claimInterface(0); 
 
-    function appendLog(text) {
-        const date = new Date().toLocaleTimeString();
-        logElement.textContent += `[${date}] ${text}\n`;
-        logElement.scrollTop = logElement.scrollHeight;
-    }
+        log("Kết nối thành công tới: " + device.productName);
 
-    connectBtn.addEventListener('click', async () => {
-        try {
-            // Bước 1: Yêu cầu quyền truy cập thiết bị
-            device = await navigator.usb.requestDevice({
-                filters: [{ vendorId: ESP32_VID, productId: ESP32_PID }]
-            });
-
-            appendLog("Đang mở thiết bị...");
-            await device.open();
-            
-            // Bước 2: Chọn cấu hình (thường là 1)
-            if (device.configuration === null) {
-                await device.selectConfiguration(1);
-            }
-
-            // Bước 3: Claim Interface (Interface 0 là CDC Serial trên ESP32-C3/S3)
-            await device.claimInterface(0);
-
-            statusText.textContent = "Đã kết nối";
-            statusText.className = "online";
-            connectBtn.disabled = true;
-            appendLog("Kết nối thành công! Đang đợi dữ liệu...");
-
-            // Bước 4: Vòng lặp đọc dữ liệu
-            readLoop();
-
-        } catch (error) {
-            console.error(error);
-            appendLog("Lỗi: " + error.message);
+        while (true) {
+            // Endpoint 1 là cổng nhận dữ liệu phổ biến của ESP USB
+            const result = await device.transferIn(1, 64);
+            const decoder = new TextDecoder();
+            log("> " + decoder.decode(result.data));
         }
-    });
-
-    async function readLoop() {
-        // Endpoint 1 hoặc 2 thường dùng cho In/Out trên dòng ESP32 USB
-        // Ở đây ta thử đọc từ endpoint số 1 (In)
-        const endpointIn = 1; 
-
-        while (device && device.opened) {
-            try {
-                // Đọc 64 bytes mỗi lần
-                const result = await device.transferIn(endpointIn, 64);
-                
-                if (result.data && result.data.byteLength > 0) {
-                    const decoder = new TextDecoder();
-                    const message = decoder.decode(result.data);
-                    appendLog(message);
-                }
-
-                if (result.status === 'stall') {
-                    await device.clearHalt('in', endpointIn);
-                }
-            } catch (error) {
-                if (error.name === 'NotFoundError' || error.name === 'NetworkError') {
-                    appendLog("Mất kết nối thiết bị.");
-                    resetUI();
-                    break;
-                }
-                console.warn("Lỗi đọc dữ liệu:", error);
-            }
-        }
+    } catch (e) {
+        alert("Lỗi: " + e.message);
     }
-
-    function resetUI() {
-        statusText.textContent = "Chưa kết nối";
-        statusText.className = "";
-        connectBtn.disabled = false;
-    }
-
-    clearBtn.onclick = () => logElement.textContent = "";
-
-    // Lắng nghe sự kiện rút cáp
-    navigator.usb.addEventListener('disconnect', (event) => {
-        if (event.device === device) {
-            appendLog("Thiết bị đã rút cáp.");
-            resetUI();
-        }
-    });
+};
 </script>
-
 </body>
 </html>
